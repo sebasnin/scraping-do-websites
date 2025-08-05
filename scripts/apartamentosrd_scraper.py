@@ -135,6 +135,23 @@ def extract_property_details(url):
         print(f"Found {len(pricing_options)} pricing options")
         for option in pricing_options:
             print(f"  {option['label']}: {option['price']} ({option['transaction_type']})")
+        
+        # Filter out "Amueblado" options when there are multiple rent options
+        if len(pricing_options) > 1:
+            rent_options = [opt for opt in pricing_options if opt['transaction_type'] == 'alquiler']
+            if len(rent_options) > 1:
+                # Keep only the base "Alquiler" option, filter out "Amueblado"
+                base_rent_options = [opt for opt in rent_options if 'AMUEBLADO' not in opt['label'].upper()]
+                furnished_rent_options = [opt for opt in rent_options if 'AMUEBLADO' in opt['label'].upper()]
+                
+                if base_rent_options and furnished_rent_options:
+                    print(f"Multiple rent options found. Keeping base 'Alquiler' and filtering out 'Amueblado' variants.")
+                    # Replace rent options with only base options
+                    other_options = [opt for opt in pricing_options if opt['transaction_type'] != 'alquiler']
+                    pricing_options = base_rent_options + other_options
+                    print(f"After filtering: {len(pricing_options)} pricing options")
+                    for option in pricing_options:
+                        print(f"  {option['label']}: {option['price']} ({option['transaction_type']})")
             
     except Exception as e:
         print(f"Error extracting pricing options: {e}")
@@ -322,10 +339,16 @@ def scrape_all_properties(max_properties=None):
 if __name__ == "__main__":
     try:
         # Scrape all properties (limit to 5 for testing)
-        properties_data = scrape_all_properties()
+        properties_data = scrape_all_properties(max_properties=5)
         
-        # Save to JSON file
-        output_file = "properties_data.json"
+        # Save to JSON file in jsons folder
+        import os
+        
+        # Create jsons directory if it doesn't exist
+        jsons_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'jsons')
+        os.makedirs(jsons_dir, exist_ok=True)
+        
+        output_file = os.path.join(jsons_dir, "properties_data.json")
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(properties_data, f, indent=2, ensure_ascii=False)
         
