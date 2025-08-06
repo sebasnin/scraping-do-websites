@@ -104,7 +104,8 @@ def extract_property_details(url):
     # Get all pricing options
     pricing_options = []
     try:
-        price_elements = driver.find_elements(By.XPATH, "//li[.//small]")
+        # Target only the main pricing section using the specific CSS class
+        price_elements = driver.find_elements(By.CSS_SELECTOR, "ul.sc-iKfoIU.dSoNEP li")
         
         for element in price_elements:
             try:
@@ -136,8 +137,9 @@ def extract_property_details(url):
         for option in pricing_options:
             print(f"  {option['label']}: {option['price']} ({option['transaction_type']})")
         
-        # Filter out "Amueblado" options when there are multiple rent options
+        # Filter out "Amueblado" options when there are multiple options of the same type
         if len(pricing_options) > 1:
+            # Handle rent options
             rent_options = [opt for opt in pricing_options if opt['transaction_type'] == 'alquiler']
             if len(rent_options) > 1:
                 # Keep only the base "Alquiler" option, filter out "Amueblado"
@@ -149,6 +151,22 @@ def extract_property_details(url):
                     # Replace rent options with only base options
                     other_options = [opt for opt in pricing_options if opt['transaction_type'] != 'alquiler']
                     pricing_options = base_rent_options + other_options
+                    print(f"After filtering: {len(pricing_options)} pricing options")
+                    for option in pricing_options:
+                        print(f"  {option['label']}: {option['price']} ({option['transaction_type']})")
+            
+            # Handle sale options
+            sale_options = [opt for opt in pricing_options if opt['transaction_type'] == 'venta']
+            if len(sale_options) > 1:
+                # Keep only the base "Venta" option, filter out "Amueblado"
+                base_sale_options = [opt for opt in sale_options if 'AMUEBLADO' not in opt['label'].upper()]
+                furnished_sale_options = [opt for opt in sale_options if 'AMUEBLADO' in opt['label'].upper()]
+                
+                if base_sale_options and furnished_sale_options:
+                    print(f"Multiple sale options found. Keeping base 'Venta' and filtering out 'Amueblado' variants.")
+                    # Replace sale options with only base options
+                    other_options = [opt for opt in pricing_options if opt['transaction_type'] != 'venta']
+                    pricing_options = base_sale_options + other_options
                     print(f"After filtering: {len(pricing_options)} pricing options")
                     for option in pricing_options:
                         print(f"  {option['label']}: {option['price']} ({option['transaction_type']})")
