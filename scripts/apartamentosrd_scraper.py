@@ -477,55 +477,20 @@ def extract_property_details(url):
         except Exception as e:
             print(f"Error extracting timestamp: {e}")
         
-        # Get property images
+        # Build ubicacion as "<Sector>, <Ciudad>, Dominican Republic"
         try:
-            image_urls = []
-            seen = set()
+            parts = []
+            sector_val = property_data.get('sector')
+            ciudad_val = property_data.get('ciudad')
+            if sector_val and str(sector_val).strip() and str(sector_val) != 'Not found':
+                parts.append(str(sector_val).strip())
+            if ciudad_val and str(ciudad_val).strip() and str(ciudad_val) != 'Not found':
+                parts.append(str(ciudad_val).strip())
+            parts.append('Dominican Republic')
+            property_data['ubicacion'] = ', '.join(parts)
+        except Exception:
+            property_data['ubicacion'] = 'Dominican Republic'
 
-            # 1) Prefer structured images from __NEXT_DATA__ (gallery_image)
-            try:
-                script_element = driver.find_element(By.CSS_SELECTOR, "script#__NEXT_DATA__")
-                data = json.loads(script_element.get_attribute("innerHTML"))
-                prop = data['props']['pageProps']['property']
-                gallery = prop.get('gallery_image') or []
-                for g in gallery:
-                    url = (g.get('image') or '').strip()
-                    if url and url not in seen:
-                        seen.add(url)
-                        image_urls.append(url)
-            except Exception as _e:
-                pass
-
-            # 2) Fallback: collect from DOM carousel images (consider lazy attributes)
-            if not image_urls:
-                img_elements = driver.find_elements(By.CSS_SELECTOR, "div.carousel img, div.carousel-cell img")
-                candidate_attrs = [
-                    'src', 'data-src', 'data-original', 'data-flickity-lazyload', 'data-lazy', 'data-srcset', 'srcset'
-                ]
-                for img in img_elements:
-                    url = ''
-                    for attr in candidate_attrs:
-                        val = img.get_attribute(attr)
-                        if val:
-                            # If srcset, take the first URL before a space
-                            if attr in ('srcset', 'data-srcset'):
-                                parts = [p.strip() for p in val.split(',') if p.strip()]
-                                if parts:
-                                    url = parts[0].split(' ')[0].strip()
-                            else:
-                                url = val.strip()
-                            if url:
-                                break
-                    if url and url not in seen:
-                        seen.add(url)
-                        image_urls.append(url)
-
-            property_data['images'] = image_urls
-            print(f"Images found: {len(image_urls)}")
-
-        except Exception as e:
-            print(f"Error extracting images: {e}")
-        
         # Add this variant to the list
         property_variants.append(property_data)
     
