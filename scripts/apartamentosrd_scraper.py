@@ -255,20 +255,45 @@ def extract_property_details(url):
     property_variants = []
     
     for pricing_option in pricing_options:
+        # Parse currency and amount from pricing text
+        price_text_raw = (pricing_option.get('price') or '').strip()
+        def detect_currency_code(text: str) -> str:
+            t = (text or '').upper()
+            if 'US$' in t or 'USD' in t:
+                return 'USD'
+            if 'RD$' in t or 'DOP' in t or 'RD ' in t:
+                return 'DOP'
+            return None
+        def parse_int_amount(text: str):
+            s = (text or '').replace('US$', '').replace('RD$', '')
+            s = s.replace(',', '').replace(' ', '')
+            # keep only digits and dot
+            import re
+            s = ''.join(re.findall(r"[0-9.]+", s))
+            try:
+                if s == '':
+                    return None
+                return int(float(s))
+            except Exception:
+                return None
+        currency_code = detect_currency_code(price_text_raw)
+        price_int = parse_int_amount(price_text_raw)
+        
         # Initialize data dictionary for this variant
         property_data = {
             'url': url,
             'transaction_type': pricing_option['transaction_type'],
-            'price': pricing_option['price'],
+            'price': price_int,
+            'currency': currency_code or 'Not found',
             'price_label': pricing_option['label'],
             'codigo': 'Not found',
             'tipo_inmueble': 'Not found',
             'ciudad': 'Not found',
             'sector': 'Not found',
-            'habitaciones': 'Not found',
-            'banos': 'Not found',
-            'parqueos': 'Not found',
-            'construccion': 'Not found',
+            'habitaciones': None,
+            'banos': None,
+            'parqueos': None,
+            'construccion': None,
             'description': 'Not found',
             'amenities': [],
             'timestamp': 'Not found',
@@ -305,10 +330,35 @@ def extract_property_details(url):
             property_data['tipo_inmueble'] = property_details.get("Tipo de Inmueble", property_data['tipo_inmueble'])
             property_data['ciudad'] = property_details.get("Ciudad", property_data['ciudad'])
             property_data['sector'] = property_details.get("Sector", property_data['sector'])
-            property_data['habitaciones'] = property_details.get("Habitaciones", property_data['habitaciones'])
-            property_data['banos'] = property_details.get("Baños", property_data['banos']) or property_details.get("Banos", property_data['banos'])
-            property_data['parqueos'] = property_details.get("Parqueos", property_data['parqueos'])
-            property_data['construccion'] = property_details.get("Construcción", property_data['construccion']) or property_details.get("Construccion", property_data['construccion'])
+            # numeric casts
+            def to_int(val):
+                try:
+                    if val is None or val == 'Not found':
+                        return None
+                    s = str(val).strip().replace(',', '.')
+                    import re
+                    s = ''.join(re.findall(r"[0-9.]+", s))
+                    if s == '':
+                        return None
+                    return int(float(s))
+                except Exception:
+                    return None
+            def to_float(val):
+                try:
+                    if val is None or val == 'Not found':
+                        return None
+                    s = str(val).strip().replace(',', '.')
+                    import re
+                    s = ''.join(re.findall(r"[0-9.]+", s))
+                    if s == '':
+                        return None
+                    return float(s)
+                except Exception:
+                    return None
+            property_data['habitaciones'] = to_int(property_details.get("Habitaciones", property_data['habitaciones']))
+            property_data['banos'] = to_int(property_details.get("Baños", property_data['banos']) or property_details.get("Banos", property_data['banos']))
+            property_data['parqueos'] = to_int(property_details.get("Parqueos", property_data['parqueos']))
+            property_data['construccion'] = to_float(property_details.get("Construcción", property_data['construccion']) or property_details.get("Construccion", property_data['construccion']))
             
         except Exception as e:
             print(f"Error extracting property details: {e}")
@@ -334,19 +384,27 @@ def extract_property_details(url):
             assign_if_missing('banos', prop.get('bathroom'))
             assign_if_missing('parqueos', prop.get('parkinglot'))
             
-            # Construcción with unit
-            if (not property_data.get('construccion') or property_data.get('construccion') == 'Not found'):
+            # Construcción as float (m2)
+            if (property_data.get('construccion') is None):
                 area = prop.get('property_area')
-                unit = prop.get('property_area_measurer')
-                if area:
+                if area is not None:
                     try:
-                        # Keep decimals only if needed
-                        area_num = float(area)
-                        area_text = f"{int(area_num):,}" if abs(area_num - int(area_num)) < 1e-9 else f"{area_num:,.2f}"
+                        property_data['construccion'] = float(area)
                     except Exception:
-                        area_text = str(area)
-                    unit_text = unit or "Mt2"
-                    property_data['construccion'] = f"{area_text} {unit_text}"
+                        pass
+            # If currency still missing, derive from JSON currencies
+            if (property_data.get('currency') == 'Not found'):
+                cur_code = None
+                if pricing_option['transaction_type'] == 'venta':
+                    cur_code = (prop.get('currency_sale_furnished') or prop.get('currency_sale'))
+                else:
+                    cur_code = (prop.get('currency_rent') or prop.get('currency_rental'))
+                if cur_code:
+                    c = cur_code.upper()
+                    if c in ('USD', 'US'):
+                        property_data['currency'] = 'USD'
+                    elif c in ('DOP', 'RD'):
+                        property_data['currency'] = 'DOP'
         except Exception as e:
             print(f"Fallback details from __NEXT_DATA__ failed: {e}")
         
