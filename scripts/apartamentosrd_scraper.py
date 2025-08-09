@@ -104,39 +104,111 @@ def extract_property_details(url):
     # Get all pricing options
     pricing_options = []
     try:
-        # Target only the main pricing section using the specific CSS class
-        price_elements = driver.find_elements(By.CSS_SELECTOR, "ul.sc-iKfoIU.dSoNEP li")
-        
+        # 1) Scoped to the main pricing column in the property header
+        price_elements = driver.find_elements(
+            By.XPATH,
+            "//div[@id='property_content']//div[@id='property-details']//div[contains(@class,'col-md-4')]//ul/li"
+        )
+
         for element in price_elements:
             try:
-                small_text = element.find_element(By.TAG_NAME, "small").text.strip()
-                span_text = element.find_element(By.TAG_NAME, "span").text.strip()
-                
+                # robustly read label and amount regardless of order
+                small_el = element.find_element(By.TAG_NAME, "small")
+                span_el = element.find_element(By.TAG_NAME, "span")
+                small_text = small_el.text.strip()
+                span_text = span_el.text.strip()
+
                 # Skip "DESDE" and "HASTA" pricing options
                 if small_text.upper() in ["DESDE", "HASTA"]:
                     print(f"Skipping range pricing: {small_text} - {span_text}")
                     continue
-                
+
                 # Map transaction types
                 transaction_type = "venta"  # default
                 if "ALQUILER" in small_text.upper():
                     transaction_type = "alquiler"
                 elif "VENTA" in small_text.upper():
                     transaction_type = "venta"
-                
+
                 pricing_options.append({
                     'transaction_type': transaction_type,
                     'price': span_text,
                     'label': small_text
                 })
-                
+
             except Exception as e:
                 print(f"Error parsing price element: {e}")
-        
+
+        # 2) Fallback: pull structured prices from __NEXT_DATA__ if none found in DOM
+        if not pricing_options:
+            try:
+                print("No DOM price elements found; falling back to __NEXT_DATA__ JSON")
+                script_element = driver.find_element(By.CSS_SELECTOR, "script#__NEXT_DATA__")
+                data = json.loads(script_element.get_attribute("innerHTML"))
+                prop = data['props']['pageProps']['property']
+
+                def currency_prefix(code: str) -> str:
+                    if not code:
+                        return ""
+                    c = code.upper()
+                    if c in ("USD", "US", "US$"):
+                        return "US$"
+                    if c in ("DOP", "RD", "RD$"):
+                        return "RD$"
+                    return f"{c}$"
+
+                def format_amount(value) -> str:
+                    try:
+                        num = float(value)
+                        # keep decimals only when needed
+                        if abs(num - int(num)) < 1e-9:
+                            return f"{int(num):,}"
+                        return f"{num:,.2f}"
+                    except Exception:
+                        return str(value)
+
+                # Build options from known fields
+                sale_price = prop.get('sale_price')
+                rent_price = prop.get('rent_price')
+                rental_price = prop.get('rental_price')
+                furnished_sale_price = prop.get('furnished_sale_price')
+
+                if sale_price:
+                    cur = currency_prefix(prop.get('currency_sale'))
+                    pricing_options.append({
+                        'transaction_type': 'venta',
+                        'price': f"{cur} {format_amount(sale_price)}",
+                        'label': 'VENTA'
+                    })
+                if furnished_sale_price:
+                    cur = currency_prefix(prop.get('currency_sale_furnished') or prop.get('currency_sale'))
+                    pricing_options.append({
+                        'transaction_type': 'venta',
+                        'price': f"{cur} {format_amount(furnished_sale_price)}",
+                        'label': 'VENTA AMUEBLADO'
+                    })
+                if rent_price:
+                    cur = currency_prefix(prop.get('currency_rent'))
+                    pricing_options.append({
+                        'transaction_type': 'alquiler',
+                        'price': f"{cur} {format_amount(rent_price)}",
+                        'label': 'ALQUILER'
+                    })
+                if rental_price:
+                    cur = currency_prefix(prop.get('currency_rental') or prop.get('currency_rent'))
+                    pricing_options.append({
+                        'transaction_type': 'alquiler',
+                        'price': f"{cur} {format_amount(rental_price)}",
+                        'label': 'ALQUILER'
+                    })
+
+            except Exception as e:
+                print(f"Fallback to __NEXT_DATA__ failed: {e}")
+
         print(f"Found {len(pricing_options)} pricing options")
         for option in pricing_options:
             print(f"  {option['label']}: {option['price']} ({option['transaction_type']})")
-        
+
         # Filter out "Amueblado" options when there are multiple options of the same type
         if len(pricing_options) > 1:
             # Handle rent options
@@ -145,7 +217,7 @@ def extract_property_details(url):
                 # Keep only the base "Alquiler" option, filter out "Amueblado"
                 base_rent_options = [opt for opt in rent_options if 'AMUEBLADO' not in opt['label'].upper()]
                 furnished_rent_options = [opt for opt in rent_options if 'AMUEBLADO' in opt['label'].upper()]
-                
+
                 if base_rent_options and furnished_rent_options:
                     print(f"Multiple rent options found. Keeping base 'Alquiler' and filtering out 'Amueblado' variants.")
                     # Replace rent options with only base options
@@ -154,14 +226,14 @@ def extract_property_details(url):
                     print(f"After filtering: {len(pricing_options)} pricing options")
                     for option in pricing_options:
                         print(f"  {option['label']}: {option['price']} ({option['transaction_type']})")
-            
+
             # Handle sale options
             sale_options = [opt for opt in pricing_options if opt['transaction_type'] == 'venta']
             if len(sale_options) > 1:
                 # Keep only the base "Venta" option, filter out "Amueblado"
                 base_sale_options = [opt for opt in sale_options if 'AMUEBLADO' not in opt['label'].upper()]
                 furnished_sale_options = [opt for opt in sale_options if 'AMUEBLADO' in opt['label'].upper()]
-                
+
                 if base_sale_options and furnished_sale_options:
                     print(f"Multiple sale options found. Keeping base 'Venta' and filtering out 'Amueblado' variants.")
                     # Replace sale options with only base options
@@ -170,7 +242,7 @@ def extract_property_details(url):
                     print(f"After filtering: {len(pricing_options)} pricing options")
                     for option in pricing_options:
                         print(f"  {option['label']}: {option['price']} ({option['transaction_type']})")
-            
+
     except Exception as e:
         print(f"Error extracting pricing options: {e}")
         pricing_options = [{'transaction_type': 'venta', 'price': 'Not found', 'label': 'Venta'}]
@@ -207,15 +279,20 @@ def extract_property_details(url):
     
         # Get property details from the resumen section
         try:
-            resumen_section = driver.find_element(By.CSS_SELECTOR, "ul.sc-dMOLTJ.bCulV")
-            detail_items = resumen_section.find_elements(By.TAG_NAME, "li")
+            # Prefer selecting the overview card by ID and then its list items
+            detail_items = driver.find_elements(By.CSS_SELECTOR, "div#overview ul li")
             
             property_details = {}
             
             for item in detail_items:
-                label_element = item.find_element(By.CSS_SELECTOR, "span.d-block")
+                try:
+                    label_element = item.find_element(By.CSS_SELECTOR, "span.d-block")
+                except Exception:
+                    # If the item doesn't have a label span, skip it
+                    continue
                 label = label_element.text.strip()
                 
+                # The LI text contains the value followed by the label. Remove the label to get the value.
                 full_text = item.text.strip()
                 value = full_text.replace(label, "").strip()
                 value = " ".join(value.split())
@@ -223,18 +300,55 @@ def extract_property_details(url):
                 property_details[label] = value
                 print(f"{label}: {value}")
             
-            # Extract specific details
-            property_data['codigo'] = property_details.get("Código", "Not found")
-            property_data['tipo_inmueble'] = property_details.get("Tipo de Inmueble", "Not found")
-            property_data['ciudad'] = property_details.get("Ciudad", "Not found")
-            property_data['sector'] = property_details.get("Sector", "Not found")
-            property_data['habitaciones'] = property_details.get("Habitaciones", "Not found")
-            property_data['banos'] = property_details.get("Baños", "Not found")
-            property_data['parqueos'] = property_details.get("Parqueos", "Not found")
-            property_data['construccion'] = property_details.get("Construcción", "Not found")
+            # Extract specific details from parsed labels
+            property_data['codigo'] = property_details.get("Código", property_data['codigo'])
+            property_data['tipo_inmueble'] = property_details.get("Tipo de Inmueble", property_data['tipo_inmueble'])
+            property_data['ciudad'] = property_details.get("Ciudad", property_data['ciudad'])
+            property_data['sector'] = property_details.get("Sector", property_data['sector'])
+            property_data['habitaciones'] = property_details.get("Habitaciones", property_data['habitaciones'])
+            property_data['banos'] = property_details.get("Baños", property_data['banos']) or property_details.get("Banos", property_data['banos'])
+            property_data['parqueos'] = property_details.get("Parqueos", property_data['parqueos'])
+            property_data['construccion'] = property_details.get("Construcción", property_data['construccion']) or property_details.get("Construccion", property_data['construccion'])
             
         except Exception as e:
             print(f"Error extracting property details: {e}")
+        
+        # Fallback: fill any missing details from __NEXT_DATA__ JSON
+        try:
+            script_element = driver.find_element(By.CSS_SELECTOR, "script#__NEXT_DATA__")
+            data = json.loads(script_element.get_attribute("innerHTML"))
+            prop = data['props']['pageProps']['property']
+            
+            # Helper for safe value assignment
+            def assign_if_missing(key, value):
+                if not property_data.get(key) or property_data.get(key) == 'Not found':
+                    if value is not None and value != "":
+                        property_data[key] = str(value)
+            
+            assign_if_missing('codigo', prop.get('cid'))
+            category = prop.get('category') or {}
+            assign_if_missing('tipo_inmueble', category.get('name'))
+            assign_if_missing('ciudad', prop.get('city'))
+            assign_if_missing('sector', prop.get('sector'))
+            assign_if_missing('habitaciones', prop.get('room'))
+            assign_if_missing('banos', prop.get('bathroom'))
+            assign_if_missing('parqueos', prop.get('parkinglot'))
+            
+            # Construcción with unit
+            if (not property_data.get('construccion') or property_data.get('construccion') == 'Not found'):
+                area = prop.get('property_area')
+                unit = prop.get('property_area_measurer')
+                if area:
+                    try:
+                        # Keep decimals only if needed
+                        area_num = float(area)
+                        area_text = f"{int(area_num):,}" if abs(area_num - int(area_num)) < 1e-9 else f"{area_num:,.2f}"
+                    except Exception:
+                        area_text = str(area)
+                    unit_text = unit or "Mt2"
+                    property_data['construccion'] = f"{area_text} {unit_text}"
+        except Exception as e:
+            print(f"Fallback details from __NEXT_DATA__ failed: {e}")
         
         # Get property description
         try:
@@ -255,17 +369,37 @@ def extract_property_details(url):
         
         # Get property amenities
         try:
-            amenities_section = driver.find_element(By.CSS_SELECTOR, "div#amenities")
-            amenities_items = amenities_section.find_elements(By.CSS_SELECTOR, "ul.sc-cWSHoV.sdWSK li")
-            
             amenities_list = []
-            for item in amenities_items:
-                amenity_text = item.find_element(By.TAG_NAME, "span").text.strip()
-                if amenity_text:
-                    amenities_list.append(amenity_text)
             
-            property_data['amenities'] = amenities_list
-            print(f"Amenities: {len(amenities_list)} found")
+            # Primary: scrape from DOM under the Amenidades card
+            amenity_spans = driver.find_elements(By.CSS_SELECTOR, "div#amenities ul li span")
+            for span in amenity_spans:
+                text = (span.text or "").strip()
+                if text:
+                    amenities_list.append(text)
+            
+            # Fallback: use __NEXT_DATA__ amenities if DOM yielded none
+            if not amenities_list:
+                try:
+                    script_element = driver.find_element(By.CSS_SELECTOR, "script#__NEXT_DATA__")
+                    data = json.loads(script_element.get_attribute("innerHTML"))
+                    prop = data['props']['pageProps']['property']
+                    for a in prop.get('amenities', []) or []:
+                        if a and isinstance(a, str):
+                            amenities_list.append(a.strip())
+                except Exception as _e:
+                    pass
+            
+            # Deduplicate while preserving order
+            seen = set()
+            deduped = []
+            for a in amenities_list:
+                if a not in seen:
+                    seen.add(a)
+                    deduped.append(a)
+            
+            property_data['amenities'] = deduped
+            print(f"Amenities: {len(deduped)} found")
             
         except Exception as e:
             print(f"Error extracting amenities: {e}")
@@ -287,17 +421,50 @@ def extract_property_details(url):
         
         # Get property images
         try:
-            image_elements = driver.find_elements(By.CSS_SELECTOR, "div.carousel-cell img")
-            
             image_urls = []
-            for img in image_elements:
-                src = img.get_attribute("src")
-                if src and src not in image_urls:
-                    image_urls.append(src)
-            
+            seen = set()
+
+            # 1) Prefer structured images from __NEXT_DATA__ (gallery_image)
+            try:
+                script_element = driver.find_element(By.CSS_SELECTOR, "script#__NEXT_DATA__")
+                data = json.loads(script_element.get_attribute("innerHTML"))
+                prop = data['props']['pageProps']['property']
+                gallery = prop.get('gallery_image') or []
+                for g in gallery:
+                    url = (g.get('image') or '').strip()
+                    if url and url not in seen:
+                        seen.add(url)
+                        image_urls.append(url)
+            except Exception as _e:
+                pass
+
+            # 2) Fallback: collect from DOM carousel images (consider lazy attributes)
+            if not image_urls:
+                img_elements = driver.find_elements(By.CSS_SELECTOR, "div.carousel img, div.carousel-cell img")
+                candidate_attrs = [
+                    'src', 'data-src', 'data-original', 'data-flickity-lazyload', 'data-lazy', 'data-srcset', 'srcset'
+                ]
+                for img in img_elements:
+                    url = ''
+                    for attr in candidate_attrs:
+                        val = img.get_attribute(attr)
+                        if val:
+                            # If srcset, take the first URL before a space
+                            if attr in ('srcset', 'data-srcset'):
+                                parts = [p.strip() for p in val.split(',') if p.strip()]
+                                if parts:
+                                    url = parts[0].split(' ')[0].strip()
+                            else:
+                                url = val.strip()
+                            if url:
+                                break
+                    if url and url not in seen:
+                        seen.add(url)
+                        image_urls.append(url)
+
             property_data['images'] = image_urls
             print(f"Images found: {len(image_urls)}")
-            
+
         except Exception as e:
             print(f"Error extracting images: {e}")
         
