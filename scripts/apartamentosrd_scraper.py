@@ -4,11 +4,17 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 import time
 import json
+import os
+import requests
 
 BASE_URL = "https://apartamentosrd.com.do"
 SEARCH_URL = f"{BASE_URL}/propiedades?country=149&currency=RD&listing_type=1&page=1"
+
+# Load environment variables (for GOOGLE_MAPS_API_KEY)
+load_dotenv()
 
 # Setup headless Chrome
 options = Options()
@@ -17,6 +23,43 @@ options.add_argument("--disable-gpu")
 options.add_argument("--no-sandbox")
 
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+
+def geocode_address(address: str):
+    """Return (latitude, longitude) for a given address using Google Geocoding API.
+
+    Reads the API key from the environment variable `GOOGLE_MAPS_API_KEY` (loaded via load_dotenv).
+    Returns (None, None) on failure.
+    """
+    try:
+        api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+        if not api_key:
+            print("GOOGLE_MAPS_API_KEY not found in environment")
+            return None, None
+
+        params = {
+            "address": address,
+            "key": api_key,
+            # Bias results to Dominican Republic
+            "components": "country:DO",
+        }
+        resp = requests.get(
+            "https://maps.gomaps.pro/maps/api/geocode/json",
+            params=params,
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            print(f"Geocoding HTTP error: {resp.status_code}")
+            return None, None
+        data = resp.json()
+        if data.get("status") != "OK" or not data.get("results"):
+            print(f"Geocoding failed: {data.get('status')} - {data.get('error_message', '')}")
+            return None, None
+        loc = data["results"][0]["geometry"]["location"]
+        return float(loc.get("lat")), float(loc.get("lng"))
+    except Exception as e:
+        print(f"Error in geocode_address: {e}")
+        return None, None
 
 def get_listing_links(listing_type=1):
     """Get all property listing links from all pages for a specific listing type"""
@@ -253,6 +296,8 @@ def extract_property_details(url):
     
     # Create separate property data for each pricing option
     property_variants = []
+    # Cache geocoding results per ubicacion string within this property
+    geocoded_coords_cache = {}
     
     for pricing_option in pricing_options:
         # Parse currency and amount from pricing text
@@ -490,6 +535,24 @@ def extract_property_details(url):
             property_data['ubicacion'] = ', '.join(parts)
         except Exception:
             property_data['ubicacion'] = 'Dominican Republic'
+
+        # Geocode latitude/longitude using Google Maps API
+        try:
+            address = property_data.get('ubicacion')
+            if address:
+                if address not in geocoded_coords_cache:
+                    lat, lng = geocode_address(address)
+                    geocoded_coords_cache[address] = (lat, lng)
+                else:
+                    lat, lng = geocoded_coords_cache[address]
+                property_data['latitude'] = lat
+                property_data['longitude'] = lng
+                if lat is not None and lng is not None:
+                    print(f"Geocoded: {lat}, {lng}")
+                else:
+                    print("Geocoding returned no coordinates")
+        except Exception as e:
+            print(f"Error geocoding ubicacion: {e}")
 
         # Add this variant to the list
         property_variants.append(property_data)
