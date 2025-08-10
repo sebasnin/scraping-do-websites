@@ -1,6 +1,10 @@
 # Ignore JSON files in the jsons folder
 jsons/*.json
 
+# Data files
+*.geojson
+*.csv
+
 # Python
 __pycache__/
 *.py[cod]

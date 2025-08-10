@@ -5,10 +5,13 @@ from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from shapely.geometry import Point, shape
 import time
 import json
 import os
 import requests
+import csv
+import pandas as pd
 
 BASE_URL = "https://apartamentosrd.com.do"
 SEARCH_URL = f"{BASE_URL}/propiedades?country=149&currency=RD&listing_type=1&page=1"
@@ -23,6 +26,134 @@ options.add_argument("--disable-gpu")
 options.add_argument("--no-sandbox")
 
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+
+def get_traffic_scores(neighborhood_id):
+    """Get traffic scores from local CSV file based on neighborhood_id (fid from barrios2.geojson)"""
+    try:
+        csv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'scores.csv')
+        
+        with open(csv_path, 'r', encoding='utf-8') as file:
+            csv_reader = csv.DictReader(file)
+            
+            for row in csv_reader:
+                if str(row['fid']).strip() == str(neighborhood_id).strip():
+                    return {
+                        'traffic_score_0830': float(row['08:30']),
+                        'traffic_score_1330': float(row['13:30']),
+                        'traffic_score_1700': float(row['17:00']),
+                        'traffic_score_total': float(row['total'])
+                    }
+        return None
+    except Exception as e:
+        print(f"Error reading traffic scores CSV: {e}")
+        return None
+
+
+def get_density_score(neighborhood_id):
+    """Get density score from local CSV file based on neighborhood_id"""
+    try:
+        csv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'population_density_results.csv')
+        df = pd.read_csv(csv_path, encoding='utf-8')
+        
+        # Find the matching row based on neighborhood_id (polygon_id in the CSV)
+        matching_row = df[df['polygon_id'] == int(neighborhood_id)]
+
+        if not matching_row.empty:
+            return {
+                'density': float(matching_row['density'].iloc[0]),
+                'score': float(matching_row['score'].iloc[0])
+            }
+        return None
+    except Exception as e:
+        print(f"Error reading density CSV: {e}")
+        return None
+
+
+def get_proximity_score(neighborhood_id):
+    """Get proximity score from local CSV file based on neighborhood_id"""
+    try:
+        csv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'proximity_scores.csv')
+        df = pd.read_csv(csv_path, encoding='utf-8')
+        
+        # Find the matching row based on neighborhood_id (ID in the CSV)
+        matching_row = df[df['ID'] == int(neighborhood_id)]
+
+        if not matching_row.empty:
+            return float(matching_row['Overall_Score'].iloc[0])
+        return None
+    except Exception as e:
+        print(f"Error reading proximity scores CSV: {e}")
+        return None
+
+
+def get_neighborhood_from_coordinates(longitude, latitude):
+    """
+    Determine neighborhood from coordinates using local barrios2.geojson
+    Returns (neighborhood_name, neighborhood_id) tuple
+    """
+    try:
+        point = Point(longitude, latitude)
+        
+        # Use local GeoJSON file
+        geojson_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'barrios2.geojson')
+        with open(geojson_path, 'r', encoding='utf-8') as f:
+            neighborhoods_data = json.load(f)
+            
+        for feature in neighborhoods_data['features']:
+            if not feature.get('geometry'):
+                continue
+                
+            polygon = shape(feature['geometry'])
+            
+            if polygon.bounds[0] <= longitude <= polygon.bounds[2] and \
+               polygon.bounds[1] <= latitude <= polygon.bounds[3]:
+                if polygon.contains(point):
+                    return (
+                        feature['properties']['TOPONIMIA'],
+                        feature['properties']['fid']
+                    )
+        
+        return None, None
+    except Exception as e:
+        print(f"Error reading neighborhoods GeoJSON: {e}")
+        return None, None
+
+
+def get_city_from_coordinates(longitude, latitude):
+    """
+    Determine city from coordinates using local provincias.geojson
+    Returns (city_name, city_id) tuple
+    """
+    try:
+        point = Point(longitude, latitude)
+        
+        # Use local GeoJSON file
+        geojson_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'provincias.geojson')
+        with open(geojson_path, 'r', encoding='utf-8') as f:
+            cities_data = json.load(f)
+            
+        # Check each polygon with bounding box optimization
+        for feature in cities_data['features']:
+            if not feature.get('geometry'):
+                continue
+                
+            polygon = shape(feature['geometry'])
+            
+            # Quick check using bounding box
+            if polygon.bounds[0] <= longitude <= polygon.bounds[2] and \
+               polygon.bounds[1] <= latitude <= polygon.bounds[3]:
+                # Only do the expensive contains check if point is in bounding box
+                if polygon.contains(point):
+                    return (
+                        feature['properties']['TOPONIMIA'],  # City name
+                        feature['properties']['fid']         # City ID
+                    )
+        
+        return None, None
+    except Exception as e:
+        print(f"Error reading cities GeoJSON: {e}")
+        return None, None
 
 
 def geocode_address(address: str):
@@ -342,7 +473,20 @@ def extract_property_details(url):
             'description': 'Not found',
             'amenities': [],
             'timestamp': 'Not found',
-            'images': []
+            'images': [],
+            'latitude': None,
+            'longitude': None,
+            'neighborhood_name': None,
+            'neighborhood_id': None,
+            'city_name': None,
+            'city_id': None,
+            'traffic_score_0830': None,
+            'traffic_score_1330': None,
+            'traffic_score_1700': None,
+            'traffic_score_total': None,
+            'density_score': None,
+            'density_value': None,
+            'proximity_score': None
         }
         
         print(f"\nProcessing {pricing_option['transaction_type']} variant: {pricing_option['price']}")
@@ -549,10 +693,67 @@ def extract_property_details(url):
                 property_data['longitude'] = lng
                 if lat is not None and lng is not None:
                     print(f"Geocoded: {lat}, {lng}")
+                    
+                    # Get neighborhood and city from coordinates
+                    try:
+                        neighborhood_name, neighborhood_id = get_neighborhood_from_coordinates(lng, lat)
+                        city_name, city_id = get_city_from_coordinates(lng, lat)
+                        
+                        property_data['neighborhood_name'] = neighborhood_name
+                        property_data['neighborhood_id'] = neighborhood_id
+                        property_data['city_name'] = city_name
+                        property_data['city_id'] = city_id
+                        
+                        if neighborhood_name:
+                            print(f"Neighborhood: {neighborhood_name} (ID: {neighborhood_id})")
+                        if city_name:
+                            print(f"City: {city_name} (ID: {city_id})")
+                        
+                        # Get scores based on neighborhood_id and city_id
+                        try:
+                            # Get traffic scores using neighborhood_id (fid from barrios2.geojson)
+                            if neighborhood_id:
+                                traffic_scores = get_traffic_scores(neighborhood_id)
+                                if traffic_scores:
+                                    property_data.update(traffic_scores)
+                                    print(f"Traffic scores: 08:30={traffic_scores['traffic_score_0830']}, 13:30={traffic_scores['traffic_score_1330']}, 17:00={traffic_scores['traffic_score_1700']}, Total={traffic_scores['traffic_score_total']}")
+                            
+                            # Get density score using neighborhood_id (fid from barrios2.geojson)
+                            if neighborhood_id:
+                                density_data = get_density_score(neighborhood_id)
+                                if density_data:
+                                    property_data['density_score'] = density_data['score']
+                                    property_data['density_value'] = density_data['density']
+                                    print(f"Density: score={density_data['score']}, value={density_data['density']}")
+                            
+                            # Get proximity score using neighborhood_id (fid from barrios2.geojson)
+                            if neighborhood_id:
+                                proximity_score = get_proximity_score(neighborhood_id)
+                                if proximity_score is not None:
+                                    property_data['proximity_score'] = proximity_score
+                                    print(f"Proximity score: {proximity_score}")
+                                    
+                        except Exception as e:
+                            print(f"Error getting scores: {e}")
+                            
+                    except Exception as e:
+                        print(f"Error getting neighborhood/city from coordinates: {e}")
+                        property_data['neighborhood_name'] = None
+                        property_data['neighborhood_id'] = None
+                        property_data['city_name'] = None
+                        property_data['city_id'] = None
                 else:
                     print("Geocoding returned no coordinates")
+                    property_data['neighborhood_name'] = None
+                    property_data['neighborhood_id'] = None
+                    property_data['city_name'] = None
+                    property_data['city_id'] = None
         except Exception as e:
             print(f"Error geocoding ubicacion: {e}")
+            property_data['neighborhood_name'] = None
+            property_data['neighborhood_id'] = None
+            property_data['city_name'] = None
+            property_data['city_id'] = None
 
         # Add this variant to the list
         property_variants.append(property_data)
@@ -602,7 +803,20 @@ def scrape_all_properties(max_properties=None):
                 'description': 'Error',
                 'amenities': [],
                 'timestamp': 'Error',
-                'images': []
+                'images': [],
+                'latitude': None,
+                'longitude': None,
+                'neighborhood_name': None,
+                'neighborhood_id': None,
+                'city_name': None,
+                'city_id': None,
+                'traffic_score_0830': None,
+                'traffic_score_1330': None,
+                'traffic_score_1700': None,
+                'traffic_score_total': None,
+                'density_score': None,
+                'density_value': None,
+                'proximity_score': None
             })
     
     return all_properties
@@ -610,7 +824,7 @@ def scrape_all_properties(max_properties=None):
 if __name__ == "__main__":
     try:
         # Scrape all properties (limit to 5 for testing)
-        properties_data = scrape_all_properties(max_properties=5)
+        properties_data = scrape_all_properties(max_properties=30)
         
         # Save to JSON file in jsons folder
         import os
