@@ -319,7 +319,7 @@ def get_listing_links(listing_type=1):
     print(f"Getting {listing_name} property links from all pages...")
     all_links = []
     page = 1
-    max_pages = 2 # Safety limit to prevent infinite loops
+    max_pages = 15 # Safety limit to prevent infinite loops
     
     while page <= max_pages:
         print(f"Scraping {listing_name} page {page}...")
@@ -1006,7 +1006,7 @@ def scrape_all_properties(max_properties=None):
 if __name__ == "__main__":
     try:
         # Scrape all properties (limit to 5 for testing)
-        properties_data = scrape_all_properties(max_properties=5)
+        properties_data = scrape_all_properties()
         
         # Save to JSON file in jsons folder
         import os
