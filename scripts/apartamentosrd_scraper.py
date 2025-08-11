@@ -772,6 +772,57 @@ def extract_property_details(url):
         except Exception as e:
             print(f"Error extracting amenities: {e}")
         
+        # Get property images (prefer __NEXT_DATA__ JSON, fallback to DOM carousel)
+        try:
+            images_collected = []
+            try:
+                script_element = driver.find_element(By.CSS_SELECTOR, "script#__NEXT_DATA__")
+                data = json.loads(script_element.get_attribute("innerHTML"))
+                prop = data['props']['pageProps']['property']
+                featured = prop.get('featured_image')
+                if featured:
+                    images_collected.append(str(featured))
+                for gi in (prop.get('gallery_image') or []):
+                    if not isinstance(gi, dict):
+                        continue
+                    url = gi.get('image') or gi.get('external_url') or gi.get('image_wm') or gi.get('external_url_wm')
+                    if url:
+                        images_collected.append(str(url))
+            except Exception:
+                pass
+
+            # Fallback to DOM carousel images if JSON yielded nothing
+            if not images_collected:
+                try:
+                    elements = driver.find_elements(By.CSS_SELECTOR, "div.carousel img")
+                    if not elements:
+                        elements = driver.find_elements(By.CSS_SELECTOR, "div.property-image img")
+                    for el in elements:
+                        try:
+                            src = (el.get_attribute('src') or '').strip()
+                            if not src:
+                                continue
+                            if src.startswith('http'):
+                                images_collected.append(src)
+                            elif src.startswith('/'):
+                                images_collected.append(BASE_URL + src)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+
+            # Deduplicate while preserving order
+            seen_urls = set()
+            deduped_urls = []
+            for u in images_collected:
+                if u and (u not in seen_urls):
+                    seen_urls.add(u)
+                    deduped_urls.append(u)
+            property_data['images'] = deduped_urls
+            print(f"Images found: {len(deduped_urls)}")
+        except Exception as e:
+            print(f"Error extracting images: {e}")
+
         # Get publication timestamp
         try:
             script_element = driver.find_element(By.CSS_SELECTOR, "script#__NEXT_DATA__")
@@ -955,7 +1006,7 @@ def scrape_all_properties(max_properties=None):
 if __name__ == "__main__":
     try:
         # Scrape all properties (limit to 5 for testing)
-        properties_data = scrape_all_properties(max_properties=30)
+        properties_data = scrape_all_properties(max_properties=5)
         
         # Save to JSON file in jsons folder
         import os
