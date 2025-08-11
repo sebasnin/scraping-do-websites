@@ -156,6 +156,127 @@ def get_city_from_coordinates(longitude, latitude):
         return None, None
 
 
+def calculate_distance_km(lat1, lon1, lat2, lon2):
+    """
+    Calculate distance in kilometers between two points using Haversine formula
+    """
+    from math import radians, sin, cos, sqrt, atan2
+    try:
+        lat1, lon1, lat2, lon2 = map(float, [lat1, lon1, lat2, lon2])
+    except Exception:
+        return None
+
+    # Convert latitude and longitude to radians
+    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
+
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+
+    # Earth radius in kilometers
+    earth_radius = 6371
+    distance = earth_radius * c
+
+    return distance
+
+
+def _load_local_geojson(geojson_filename):
+    """Load a GeoJSON from the local project directory (no network)."""
+    try:
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+        geojson_path = os.path.join(base_dir, geojson_filename)
+        with open(geojson_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading local GeoJSON {geojson_filename}: {e}")
+        return None
+
+
+def find_closest_amenity(longitude, latitude, geojson_filename):
+    """
+    Find the closest amenity to a property location using local GeoJSON only.
+    Returns distance in kilometers (float) or None if not found.
+    """
+    try:
+        amenities_data = _load_local_geojson(geojson_filename)
+        if not amenities_data:
+            return None
+
+        property_point = Point(longitude, latitude)
+        min_distance_km = float('inf')
+
+        for feature in amenities_data.get('features', []):
+            try:
+                geom_data = feature.get('geometry')
+                if not geom_data:
+                    continue
+                amenity_geom = shape(geom_data)
+
+                # Get representative point
+                if amenity_geom.geom_type == 'Point':
+                    amenity_lon = amenity_geom.x
+                    amenity_lat = amenity_geom.y
+                else:
+                    centroid = amenity_geom.centroid
+                    amenity_lon = centroid.x
+                    amenity_lat = centroid.y
+
+                # Haversine distance (km)
+                distance_km = calculate_distance_km(
+                    latitude, longitude, amenity_lat, amenity_lon
+                )
+                if distance_km is None:
+                    continue
+                if distance_km < min_distance_km:
+                    min_distance_km = distance_km
+            except Exception as e:
+                # Skip malformed features
+                print(f"Error processing feature in {geojson_filename}: {e}")
+                continue
+
+        return min_distance_km if min_distance_km != float('inf') else None
+    except Exception as e:
+        print(f"Error finding closest amenity in {geojson_filename}: {e}")
+        return None
+
+
+def calculate_amenity_distances(longitude, latitude):
+    """
+    Calculate distances to all amenity types for a given property location using local GeoJSON files.
+    Returns a dictionary with 'closest_*_km' distances and 'near_*' boolean flags.
+    """
+    if longitude is None or latitude is None:
+        return {}
+
+    amenity_config = {
+        'principal_avenue': {'file': 'avenidas_principales.geojson', 'threshold': 0.5},  # 500m
+        'gym':               {'file': 'gimnasios.geojson',             'threshold': 0.6},  # 600m
+        'hospital':          {'file': 'hospitales.geojson',            'threshold': 2.5},  # 2.5km
+        'subway':            {'file': 'metro.geojson',                 'threshold': 1.0},  # 1km
+        'park':              {'file': 'parques_filtered.geojson',      'threshold': 0.6},  # 600m
+        'beach':             {'file': 'playas.geojson',                'threshold': 2.0},  # 2km
+        'supermarket':       {'file': 'supermercados.geojson',         'threshold': 1.2},  # 1.2km
+        'university':        {'file': 'universidades.geojson',         'threshold': 0.3},  # 300m
+    }
+
+    results = {}
+    print(f"🔍 Calculating amenity distances for coordinates: {latitude}, {longitude}")
+    for amenity_type, cfg in amenity_config.items():
+        print(f"  📍 Finding closest {amenity_type}...")
+        distance = find_closest_amenity(longitude, latitude, cfg['file'])
+        if distance is not None:
+            results[f'closest_{amenity_type}_km'] = round(distance, 3)
+            results[f'near_{amenity_type}'] = distance <= cfg['threshold']
+            print(f"    ✅ Closest {amenity_type}: {distance:.3f}km (within threshold: {results[f'near_{amenity_type}']})")
+        else:
+            results[f'closest_{amenity_type}_km'] = None
+            results[f'near_{amenity_type}'] = False
+            print(f"    ❌ Could not find closest {amenity_type}")
+    return results
+
+
 def geocode_address(address: str):
     """Return (latitude, longitude) for a given address using Google Geocoding API.
 
@@ -754,6 +875,16 @@ def extract_property_details(url):
             property_data['neighborhood_id'] = None
             property_data['city_name'] = None
             property_data['city_id'] = None
+
+        # Calculate amenity proximity (local geojsons) when coordinates are present
+        try:
+            if property_data.get('longitude') is not None and property_data.get('latitude') is not None:
+                amenity_info = calculate_amenity_distances(
+                    property_data['longitude'], property_data['latitude']
+                )
+                property_data.update(amenity_info)
+        except Exception as e:
+            print(f"Error calculating amenity distances: {e}")
 
         # Add this variant to the list
         property_variants.append(property_data)
